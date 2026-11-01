@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>貼上到 Sheet</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:#0f1115;color:#e8e8e8;font-family:-apple-system,"Noto Sans HK",sans-serif;font-size:17px}
+h1{font-size:20px;margin:0 0 14px}
+label{display:block;margin:14px 0 6px;color:#9aa4b2;font-size:14px}
+select,input{width:100%;padding:12px;font-size:17px;border-radius:10px;border:1px solid #2c3340;background:#1a1e26;color:#e8e8e8}
+button{width:100%;padding:14px;font-size:18px;border:0;border-radius:12px;background:#2f6fed;color:#fff;margin-top:10px}
+button.sec{background:#2c3340}
+button:disabled{opacity:.4}
+#big{background:#1f9d55;font-size:22px;padding:20px;margin-top:20px}
+#log{margin-top:16px;padding:12px;background:#1a1e26;border-radius:10px;white-space:pre-wrap;word-break:break-all;min-height:48px;font-size:15px}
+.row{display:flex;gap:8px}
+.row>*{flex:1}
+</style>
+</head>
+<body>
+<h1>📋 貼上到 Sheet 最後一行</h1>
+
+<button id="login">1. Google 登入</button>
+
+<label>2. 揀 Google Sheet 檔案</label>
+<select id="file"><option value="">（登入後載入）</option></select>
+<input id="fileManual" placeholder="或貼上 Sheet 網址 / ID" style="margin-top:8px">
+
+<label>3. 揀分頁</label>
+<select id="tab"><option value="">（先揀檔案）</option></select>
+
+<label>4. 揀欄（例如 A）</label>
+<input id="col" value="A" maxlength="3" autocapitalize="characters">
+
+<button id="big" disabled>📥 貼上剪貼簿到下一行</button>
+<div id="log">未登入</div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+const CLIENT_ID='539262270350-359cuo3a7l5onpijsuav4elbchrrfopl.apps.googleusercontent.com';
+const DEFAULT_ID='1kC8j1xmgHmuiBJCiRhBJzsvbucTVEfCDPQLCa2KuJvY';
+const SCOPE='https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.metadata.readonly';
+const $=id=>document.getElementById(id);
+let token='',tc=null;
+const log=t=>$('log').textContent=t;
+const ls=(k,v)=>{try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){}};
+
+async function api(url,opt={}){
+  opt.headers=Object.assign({Authorization:'Bearer '+token},opt.headers||{});
+  const r=await fetch(url,opt);
+  const j=await r.json();
+  if(!r.ok)throw new Error(j.error&&j.error.message||r.status);
+  return j;
+}
+function sheetId(){
+  const m=$('fileManual').value.trim();
+  if(m){const x=m.match(/\/d\/([a-zA-Z0-9_-]+)/);return x?x[1]:m}
+  return $('file').value;
+}
+function initGIS(){
+  if(!window.google||!google.accounts){return setTimeout(initGIS,300)}
+  tc=google.accounts.oauth2.initTokenClient({client_id:CLIENT_ID,scope:SCOPE,callback:async r=>{
+    if(r.error){log('登入失敗：'+r.error);return}
+    token=r.access_token;$('big').disabled=false;log('已登入 ✅');
+    await loadFiles();
+  }});
+}
+initGIS();
+$('login').onclick=()=>tc&&tc.requestAccessToken();
+
+async function loadFiles(){
+  try{
+    const q=encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and trashed=false");
+    const j=await api(`https://www.googleapis.com/drive/v3/files?q=${q}&orderBy=modifiedTime desc&pageSize=100&fields=files(id,name)`);
+    const sel=$('file');sel.innerHTML='';
+    j.files.forEach(f=>sel.add(new Option(f.name,f.id)));
+    const last=ls('fileId')||DEFAULT_ID;
+    if([...sel.options].some(o=>o.value===last))sel.value=last;
+    await loadTabs();
+  }catch(e){
+    log('載入檔案清單失敗（可改用上面貼網址/ID）：'+e.message);
+    await loadTabs();
+  }
+}
+async function loadTabs(){
+  const id=sheetId()||DEFAULT_ID;
+  if(!id)return;
+  try{
+    const j=await api(`https://sheets.googleapis.com/v4/spreadsheets/${id}?fields=sheets.properties.title`);
+    const sel=$('tab');sel.innerHTML='';
+    j.sheets.forEach(s=>sel.add(new Option(s.properties.title,s.properties.title)));
+    const t=ls('tab');if(t&&[...sel.options].some(o=>o.value===t))sel.value=t;
+  }catch(e){log('載入分頁失敗：'+e.message)}
+}
+$('file').onchange=()=>{ls('fileId',$('file').value);$('fileManual').value='';loadTabs()};
+$('fileManual').onchange=loadTabs;
+$('tab').onchange=()=>ls('tab',$('tab').value);
+$('col').value=ls('col')||'A';
+$('col').onchange=()=>ls('col',$('col').value.trim().toUpperCase());
+
+function colNum(s){let n=0;for(const c of s)n=n*26+c.charCodeAt(0)-64;return n}
+function colName(n){let s='';while(n>0){const m=(n-1)%26;s=String.fromCharCode(65+m)+s;n=Math.floor((n-1)/26)}return s}
+
+$('big').onclick=async()=>{
+  const id=sheetId()||DEFAULT_ID,tab=$('tab').value,col=$('col').value.trim().toUpperCase();
+  if(!id||!tab||!/^[A-Z]{1,3}$/.test(col)){log('請揀好檔案、分頁，欄要係英文字母');return}
+  $('big').disabled=true;
+  try{
+    let text=await navigator.clipboard.readText();
+    text=text.replace(/\r/g,'').replace(/\n+$/,'');
+    if(!text){log('剪貼簿係空');return}
+    const rows=text.split('\n').map(r=>r.split('\t'));
+    const q="'"+tab.replace(/'/g,"''")+"'";
+    const cur=await api(`https://sheets.googleapis.com/v4/spreadsheets/${id}/values/${encodeURIComponent(q+'!'+col+':'+col)}`);
+    const next=(cur.values?cur.values.length:0)+1;
+    const range=`${q}!${col}${next}`;
+    await api(`https://sheets.googleapis.com/v4/spreadsheets/${id}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,{
+      method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({range,majorDimension:'ROWS',values:rows})
+    });
+    log(`✅ 已貼上 ${rows.length} 行，由 ${col}${next} 開始\n${text.slice(0,200)}`);
+  }catch(e){log('失敗：'+e.message)}
+  finally{$('big').disabled=false}
+};
+</script>
+</body>
+</html>
