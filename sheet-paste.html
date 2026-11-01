@@ -51,7 +51,7 @@ button:disabled{opacity:.4}
 <label>4. 揀欄（例如 A）</label>
 <input id="col" value="A" maxlength="3" autocapitalize="characters">
 
-<button id="big" disabled>📥 貼上剪貼簿（最後內容下 2 行）</button>
+<button id="big">📥 貼上剪貼簿（最後內容下 2 行）</button>
 <div id="log">未登入</div>
 
 <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -60,7 +60,22 @@ const CLIENT_ID='539262270350-359cuo3a7l5onpijsuav4elbchrrfopl.apps.googleuserco
 const SCOPE='https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.metadata.readonly';
 const GAP=1; // 最後有內容嗰行之後，空 1 行，即貼落「下 2 行」
 const $=id=>document.getElementById(id);
-let token='',tc=null,hist=[],cur='';
+let token='',tc=null,hist=[],cur='',pending=null;
+function saveTok(t,exp){try{if(t)localStorage.setItem('tok',JSON.stringify({t,exp}));else localStorage.removeItem('tok')}catch(e){}}
+function loadTok(){try{const o=JSON.parse(localStorage.getItem('tok')||'null');if(o&&o.exp>Date.now()+60000){token=o.t;return true}}catch(e){}return false}
+function tokValid(){try{const o=JSON.parse(localStorage.getItem('tok')||'null');return !!(token&&o&&o.exp>Date.now()+60000)}catch(e){return false}}
+function ensureToken(){
+  if(tokValid())return Promise.resolve();
+  if(!tc)return Promise.reject(new Error('Google 登入組件未載入，請稍後再試'));
+  return new Promise((res,rej)=>{pending={res,rej};tc.requestAccessToken({prompt:''})});
+}
+function fillTabs(e){
+  const sel=$('tab');sel.innerHTML='';
+  const names=(e&&e.tabs)||[];
+  if(!names.length){sel.add(new Option('（登入後載入）',''));return}
+  names.forEach(n=>sel.add(new Option(n,n)));
+  if(e.tab&&names.includes(e.tab))sel.value=e.tab;
+}
 const log=t=>$('log').textContent=t;
 
 function loadHist(){try{hist=JSON.parse(localStorage.getItem('sheets')||'[]')}catch(e){hist=[]}}
@@ -84,6 +99,7 @@ function select(id){
   e.t=Date.now();saveHist();renderHist();
   $('label').value=e.label||'';
   $('col').value=e.col||'A';
+  fillTabs(e);
   loadTabs();
 }
 function addSheet(id){
@@ -95,19 +111,20 @@ async function api(url,opt={}){
   opt.headers=Object.assign({Authorization:'Bearer '+token},opt.headers||{});
   const r=await fetch(url,opt);
   const j=await r.json();
-  if(!r.ok)throw new Error(j.error&&j.error.message||r.status);
+  if(!r.ok){if(r.status===401){token='';saveTok(null)}throw new Error(j.error&&j.error.message||r.status)}
   return j;
 }
 async function loadTabs(){
   const e=entry();
   if(!e)return;
-  if(!token){log('請先登入');return}
+  if(!token)return;
   try{
     const j=await api(`https://sheets.googleapis.com/v4/spreadsheets/${e.id}?fields=properties.title,sheets.properties.title`);
     const sel=$('tab');sel.innerHTML='';
     j.sheets.forEach(s=>sel.add(new Option(s.properties.title,s.properties.title)));
     if(e.tab&&[...sel.options].some(o=>o.value===e.tab))sel.value=e.tab;
     e.tab=sel.value;
+    e.tabs=j.sheets.map(s=>s.properties.title);
     if(!e.label){e.label=j.properties.title;$('label').value=e.label;renderHist()}
     saveHist();
     log('已載入：'+(e.label||e.id));
@@ -143,10 +160,12 @@ async function loadRecent(){
 function initGIS(){
   if(!window.google||!google.accounts){return setTimeout(initGIS,300)}
   tc=google.accounts.oauth2.initTokenClient({client_id:CLIENT_ID,scope:SCOPE,callback:r=>{
-    if(r.error){log('登入失敗：'+r.error);return}
-    token=r.access_token;$('big').disabled=false;log('已登入 ✅');
+    if(r.error){log('登入失敗：'+r.error);if(pending){pending.rej(new Error(r.error));pending=null}return}
+    token=r.access_token;saveTok(token,Date.now()+(Number(r.expires_in)||3600)*1000);
+    log('已登入 ✅');
+    if(pending){pending.res();pending=null}
     loadRecent();loadTabs();
-  }});
+  },error_callback:e=>{log('登入視窗未完成：'+(e&&e.type||''));if(pending){pending.rej(new Error(e&&e.type||'popup'));pending=null}}});
 }
 initGIS();
 $('login').onclick=()=>tc&&tc.requestAccessToken();
@@ -173,9 +192,13 @@ $('col').onchange=()=>{const e=entry();if(e){e.col=$('col').value.trim().toUpper
 loadHist();
 if(hist.length){cur=[...hist].sort((a,b)=>b.t-a.t)[0].id;renderHist();$('label').value=entry().label||'';$('col').value=entry().col||'A';log('未登入（上次用：'+(entry().label||entry().id)+'）')}
 
+if(loadTok()){log('已用上次登入 ✅（免再登入）');loadRecent();loadTabs()}
+else if(hist.length){log('已記住 Sheet。撳「貼上」時如過期，會自動彈出 Google 視窗確認一下。')}
+if(entry())fillTabs(entry());
+
 $('big').onclick=async()=>{
   const e=entry(),tab=$('tab').value,col=$('col').value.trim().toUpperCase();
-  if(!e||!tab||!/^[A-Z]{1,3}$/.test(col)){log('請揀好 Sheet、分頁，欄要係英文字母');return}
+  if(!e||!tab||!/^[A-Z]{1,3}$/.test(col)){log('請揀好 Sheet、分頁，欄要係英文字母（如分頁空白，請先撳「Google 登入」載入一次）');return}
   $('big').disabled=true;
   try{
     let text=await navigator.clipboard.readText();
@@ -183,16 +206,26 @@ $('big').onclick=async()=>{
     if(!text){log('剪貼簿係空');return}
     const rows=text.split('\n').map(r=>r.split('\t'));
     const q="'"+tab.replace(/'/g,"''")+"'";
-    const cur_=await api(`https://sheets.googleapis.com/v4/spreadsheets/${e.id}/values/${encodeURIComponent(q+'!'+col+':'+col)}`);
-    const last=cur_.values?cur_.values.length:0;
-    const next=last===0?1:last+1+GAP;
-    const range=`${q}!${col}${next}`;
-    await api(`https://sheets.googleapis.com/v4/spreadsheets/${e.id}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,{
-      method:'PUT',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({range,majorDimension:'ROWS',values:rows})
-    });
+    const work=async()=>{
+      await ensureToken();
+      const cur_=await api(`https://sheets.googleapis.com/v4/spreadsheets/${e.id}/values/${encodeURIComponent(q+'!'+col+':'+col)}`);
+      const last=cur_.values?cur_.values.length:0;
+      const next=last===0?1:last+1+GAP;
+      const range=`${q}!${col}${next}`;
+      await api(`https://sheets.googleapis.com/v4/spreadsheets/${e.id}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,{
+        method:'PUT',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({range,majorDimension:'ROWS',values:rows})
+      });
+      return {last,next};
+    };
+    let r;
+    try{r=await work()}
+    catch(err){
+      if(/Invalid Credentials|UNAUTHENTICATED|401/i.test(err.message)){token='';saveTok(null);r=await work()}
+      else throw err;
+    }
     e.tab=tab;e.col=col;e.t=Date.now();saveHist();renderHist();
-    log(`✅ 已貼上 ${rows.length} 行，由 ${col}${next} 開始（最後內容喺第 ${last} 行）\n${text.slice(0,200)}`);
+    log(`✅ 已貼上 ${rows.length} 行，由 ${col}${r.next} 開始（最後內容喺第 ${r.last} 行）\n${text.slice(0,200)}`);
   }catch(err){log('失敗：'+err.message)}
   finally{$('big').disabled=false}
 };
