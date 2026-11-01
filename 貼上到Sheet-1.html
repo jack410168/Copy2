@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>貼上到 Sheet</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:#0f1115;color:#e8e8e8;font-family:-apple-system,"Noto Sans HK",sans-serif;font-size:17px}
+h1{font-size:20px;margin:0 0 14px}
+label{display:block;margin:14px 0 6px;color:#9aa4b2;font-size:14px}
+select,input{width:100%;padding:12px;font-size:17px;border-radius:10px;border:1px solid #2c3340;background:#1a1e26;color:#e8e8e8}
+button{width:100%;padding:14px;font-size:18px;border:0;border-radius:12px;background:#2f6fed;color:#fff;margin-top:10px}
+button.sec{background:#2c3340;font-size:15px;padding:10px}
+button:disabled{opacity:.4}
+#big{background:#1f9d55;font-size:22px;padding:20px;margin-top:20px}
+#log{margin-top:16px;padding:12px;background:#1a1e26;border-radius:10px;white-space:pre-wrap;word-break:break-all;min-height:48px;font-size:15px}
+.row{display:flex;gap:8px}
+.row>*{flex:1}
+</style>
+</head>
+<body>
+<h1>📋 貼上到 Sheet 最後內容下 2 行</h1>
+
+<button id="login">1. Google 登入</button>
+
+<label>2. 揀 Sheet（曾經開啟過嘅記錄）</label>
+<select id="hist"><option value="">（未有記錄，請喺下面加入）</option></select>
+
+<label>標籤（可自己改名）</label>
+<div class="row">
+  <input id="label" placeholder="例如：車牌記錄">
+  <button class="sec" id="del" style="margin-top:0;flex:0 0 90px">刪除記錄</button>
+</div>
+
+<label>加入新 Sheet（貼上網址或 ID）</label>
+<div class="row">
+  <input id="fileManual" placeholder="https://docs.google.com/spreadsheets/d/…">
+  <button class="sec" id="add" style="margin-top:0;flex:0 0 70px">加入</button>
+</div>
+
+<label>3. 揀分頁</label>
+<select id="tab"><option value="">（登入後載入）</option></select>
+
+<label>4. 揀欄（例如 A）</label>
+<input id="col" value="A" maxlength="3" autocapitalize="characters">
+
+<button id="big" disabled>📥 貼上剪貼簿（最後內容下 2 行）</button>
+<div id="log">未登入</div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+const CLIENT_ID='539262270350-359cuo3a7l5onpijsuav4elbchrrfopl.apps.googleusercontent.com';
+const SCOPE='https://www.googleapis.com/auth/spreadsheets';
+const GAP=1; // 最後有內容嗰行之後，空 1 行，即貼落「下 2 行」
+const $=id=>document.getElementById(id);
+let token='',tc=null,hist=[],cur='';
+const log=t=>$('log').textContent=t;
+
+function loadHist(){try{hist=JSON.parse(localStorage.getItem('sheets')||'[]')}catch(e){hist=[]}}
+function saveHist(){try{localStorage.setItem('sheets',JSON.stringify(hist))}catch(e){}}
+const entry=()=>hist.find(h=>h.id===cur);
+
+function renderHist(){
+  const sel=$('hist');sel.innerHTML='';
+  if(!hist.length){sel.add(new Option('（未有記錄，請喺下面加入）',''));return}
+  [...hist].sort((a,b)=>b.t-a.t).forEach(h=>sel.add(new Option(h.label||h.id,h.id)));
+  sel.value=cur;
+}
+function parseId(s){
+  s=s.trim();const m=s.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if(m)return m[1];
+  return /^[a-zA-Z0-9_-]{20,}$/.test(s)?s:'';
+}
+function select(id){
+  cur=id;const e=entry();
+  if(!e){$('label').value='';return}
+  e.t=Date.now();saveHist();renderHist();
+  $('label').value=e.label||'';
+  $('col').value=e.col||'A';
+  loadTabs();
+}
+function addSheet(id){
+  if(!hist.some(h=>h.id===id))hist.push({id,label:'',tab:'',col:'A',t:Date.now()});
+  select(id);
+}
+
+async function api(url,opt={}){
+  opt.headers=Object.assign({Authorization:'Bearer '+token},opt.headers||{});
+  const r=await fetch(url,opt);
+  const j=await r.json();
+  if(!r.ok)throw new Error(j.error&&j.error.message||r.status);
+  return j;
+}
+async function loadTabs(){
+  const e=entry();
+  if(!e)return;
+  if(!token){log('請先登入');return}
+  try{
+    const j=await api(`https://sheets.googleapis.com/v4/spreadsheets/${e.id}?fields=properties.title,sheets.properties.title`);
+    const sel=$('tab');sel.innerHTML='';
+    j.sheets.forEach(s=>sel.add(new Option(s.properties.title,s.properties.title)));
+    if(e.tab&&[...sel.options].some(o=>o.value===e.tab))sel.value=e.tab;
+    e.tab=sel.value;
+    if(!e.label){e.label=j.properties.title;$('label').value=e.label;renderHist()}
+    saveHist();
+    log('已載入：'+(e.label||e.id));
+  }catch(err){log('載入分頁失敗：'+err.message)}
+}
+
+function initGIS(){
+  if(!window.google||!google.accounts){return setTimeout(initGIS,300)}
+  tc=google.accounts.oauth2.initTokenClient({client_id:CLIENT_ID,scope:SCOPE,callback:r=>{
+    if(r.error){log('登入失敗：'+r.error);return}
+    token=r.access_token;$('big').disabled=false;log('已登入 ✅');
+    loadTabs();
+  }});
+}
+initGIS();
+$('login').onclick=()=>tc&&tc.requestAccessToken();
+
+$('hist').onchange=()=>select($('hist').value);
+$('add').onclick=()=>{
+  const id=parseId($('fileManual').value);
+  if(!id){log('網址或 ID 唔啱');return}
+  $('fileManual').value='';addSheet(id);
+};
+$('label').onchange=()=>{const e=entry();if(!e)return;e.label=$('label').value.trim();saveHist();renderHist()};
+$('del').onclick=()=>{
+  const e=entry();if(!e)return;
+  if(!confirm('刪除記錄：'+(e.label||e.id)+'？（唔會刪除 Google Sheet）'))return;
+  hist=hist.filter(h=>h.id!==cur);saveHist();
+  cur=hist.length?[...hist].sort((a,b)=>b.t-a.t)[0].id:'';
+  renderHist();select(cur);
+  if(!cur){$('tab').innerHTML='<option value="">（先加入 Sheet）</option>'}
+};
+$('tab').onchange=()=>{const e=entry();if(e){e.tab=$('tab').value;saveHist()}};
+$('col').onchange=()=>{const e=entry();if(e){e.col=$('col').value.trim().toUpperCase();saveHist()}};
+
+// 啟動：預設揀上一次用嘅 Sheet
+loadHist();
+if(hist.length){cur=[...hist].sort((a,b)=>b.t-a.t)[0].id;renderHist();$('label').value=entry().label||'';$('col').value=entry().col||'A';log('未登入（上次用：'+(entry().label||entry().id)+'）')}
+
+$('big').onclick=async()=>{
+  const e=entry(),tab=$('tab').value,col=$('col').value.trim().toUpperCase();
+  if(!e||!tab||!/^[A-Z]{1,3}$/.test(col)){log('請揀好 Sheet、分頁，欄要係英文字母');return}
+  $('big').disabled=true;
+  try{
+    let text=await navigator.clipboard.readText();
+    text=text.replace(/\r/g,'').replace(/\n+$/,'');
+    if(!text){log('剪貼簿係空');return}
+    const rows=text.split('\n').map(r=>r.split('\t'));
+    const q="'"+tab.replace(/'/g,"''")+"'";
+    const cur_=await api(`https://sheets.googleapis.com/v4/spreadsheets/${e.id}/values/${encodeURIComponent(q+'!'+col+':'+col)}`);
+    const last=cur_.values?cur_.values.length:0;
+    const next=last===0?1:last+1+GAP;
+    const range=`${q}!${col}${next}`;
+    await api(`https://sheets.googleapis.com/v4/spreadsheets/${e.id}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,{
+      method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({range,majorDimension:'ROWS',values:rows})
+    });
+    e.tab=tab;e.col=col;e.t=Date.now();saveHist();renderHist();
+    log(`✅ 已貼上 ${rows.length} 行，由 ${col}${next} 開始（最後內容喺第 ${last} 行）\n${text.slice(0,200)}`);
+  }catch(err){log('失敗：'+err.message)}
+  finally{$('big').disabled=false}
+};
+</script>
+</body>
+</html>
